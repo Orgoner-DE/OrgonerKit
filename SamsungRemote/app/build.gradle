@@ -1,0 +1,6 @@
+plugins { id 'com.android.application' }
+android {
+ namespace 'de.orgoner.samsungremote'
+ compileSdk 35
+ defaultConfig { applicationId 'de.orgoner.samsungremote'; minSdk 23; targetSdk 32; versionCode 3; versionName '3.0' }
+}
