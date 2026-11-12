@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#101421">
+  <title>Orgoner App Studio</title>
+  <style>
+    :root { color-scheme:dark; --bg:#101421; --panel:#1c2436; --ink:#edf2ff; --sub:#abb8d3; --accent:#8bb8ff; --line:#33415c }
+    * { box-sizing:border-box }
+    body { font:16px/1.45 system-ui,-apple-system,sans-serif; background:var(--bg); color:var(--ink); margin:0; padding:env(safe-area-inset-top) 16px env(safe-area-inset-bottom) }
+    main {max-width:720px;margin:0 auto;padding:18px 0 30px}
+    h1 {font-size:1.5rem;margin:0 0 6px} h2{font-size:1.13rem;margin:0 0 12px}
+    p {margin:8px 0 12px}
+    section {background:var(--panel);padding:18px;border-radius:16px;margin:16px 0;border:1px solid #293751}
+    label {display:block;margin:12px 0 6px}
+    button,input {font:inherit}
+    input[type=text],input[type=url]{width:100%;color:var(--ink);background:var(--bg);border:1px solid #52607c;border-radius:10px;padding:12px;min-height:46px}
+    input[type=file] {width:100%;max-width:100%;color:var(--sub);padding:8px 0}
+    button {background:var(--accent);color:var(--bg);font-weight:650;border:0;border-radius:10px;padding:12px 14px;margin:5px 5px 6px 0;min-height:44px}
+    button.secondary {background:#394b6a;color:var(--ink)}
+    button:focus-visible,input:focus-visible {outline:3px solid #fff;outline-offset:2px}
+    pre {white-space:pre-wrap;overflow-wrap:anywhere;background:#0b1020;padding:12px;border-radius:10px;max-height:320px;overflow:auto;font-size:.85rem}
+    small,.muted {color:var(--sub)}
+    .head {display:flex;align-items:center;justify-content:space-between;gap:10px}
+    .version{font-size:.72rem;background:#33415c;border-radius:30px;padding:5px 10px;white-space:nowrap}
+    #updateStatus {font-size:.88rem;white-space:pre-wrap;overflow-wrap:anywhere}
+    a{color:var(--accent)}
+  </style>
+</head>
+<body>
+<main>
+  <header class="head"><h1>📱 Orgoner App Studio</h1><span class="version">v1.0.0</span></header>
+  <p class="muted">Lokale APK-Vorprüfung und iOS-Projektstarter</p>
+  <section>
+    <h2>1. APK auswählen</h2>
+    <input id="file" type="file" accept=".apk,.zip,application/zip,application/vnd.android.package-archive" aria-label="APK oder ZIP auswählen">
+    <p id="status" class="muted" role="status">Noch keine Datei gewählt.</p>
+    <button id="inspect" type="button">Analysieren</button>
+    <button id="saveReport" class="secondary" type="button">Bericht speichern</button>
+    <pre id="report" aria-live="polite">Hier erscheint der Prüfbericht.</pre>
+    <small>Nur ZIP-Strukturprüfung. Keine vollständige Signatur-, Berechtigungs- oder Malwareprüfung.</small>
+  </section>
+  <section>
+    <h2>2. iOS-Projektstarter</h2>
+    <label for="name">App-Name</label>
+    <input id="name" type="text" value="MeineApp" maxlength="40" autocomplete="off">
+    <button id="export" type="button">SwiftUI-Datei erzeugen</button>
+    <p class="muted" id="exportStatus" role="status"></p>
+    <small>Erzeugt eine SwiftUI-Startdatei, keine konvertierte iOS-App. Für einen iOS-Build wird Xcode benötigt.</small>
+  </section>
+  <section>
+    <h2>3. Updates</h2>
+    <p class="muted">Version 1.0.0 · Einstellungen bleiben auf dem Gerät gespeichert.</p>
+    <label for="feed">HTTPS-Adresse der Update-Datei (version.json)</label>
+    <input id="feed" type="url" inputmode="url" placeholder="https://example.org/version.json" autocomplete="url">
+    <button id="checkUpdate" type="button">Auf Updates prüfen</button>
+    <p id="updateStatus" role="status">Noch keine Updatequelle eingerichtet.</p>
+    <small>Downloads und Installation neuer APKs müssen von Android bestätigt werden.</small>
+  </section>
+</main>
+<script>
+'use strict';
+const VERSION = '1.0.0';
+const byId = id => document.getElementById(id);
+const fileInput = byId('file');
+let lastReport = '';
+const feedInput = byId('feed');
+try { feedInput.value = localStorage.getItem('orgoner-update-url') || ''; } catch (_) {}
+fileInput.onchange = () => {
+  const file = fileInput.files && fileInput.files[0];
+  byId('status').textContent = file ? `${file.name} (${(file.size / 1048576).toFixed(2)} MB)` : 'Keine Datei';
+  byId('report').textContent = 'Hier erscheint der Prüfbericht.';
+  lastReport = '';
+};
+
+// Inspect the ZIP central directory without copying the entire APK to RAM.
+async function inspectZip(file) {
+  const tailStart = Math.max(0, file.size - 65557);
+  const tail = new DataView(await file.slice(tailStart).arrayBuffer());
+  let eocd = -1;
+  for (let i = tail.byteLength - 22; i >= 0; i--) {
+    if (tail.getUint32(i,true) === 0x06054b50 && i + 22 + tail.getUint16(i + 20, true) === tail.byteLength) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error('Kein gültiges ZIP-Endverzeichnis gefunden.');
+  const entryCount = tail.getUint16(eocd+10,true);
+  const centralSize = tail.getUint32(eocd+12,true);
+  const centralOffset = tail.getUint32(eocd+16,true);
+  if (entryCount === 65535 || centralSize === 0xffffffff || centralOffset === 0xffffffff) throw new Error('ZIP64 wird noch nicht unterstützt.');
+  if (centralSize > 16 * 1048576 || entryCount > 10000) throw new Error('ZIP-Verzeichnis zu groß für die Vorprüfung.');
+  if (centralOffset + centralSize > file.size) throw new Error('Beschädigtes ZIP-Verzeichnis.');
+  const c = new DataView(await file.slice(centralOffset, centralOffset+centralSize).arrayBuffer());
+  let offset = 0; const entries = [];
+  const decoder = new TextDecoder('utf-8', {fatal:false});
+  for (let i = 0; i < entryCount; i++) {
+    if (offset+46>c.byteLength || c.getUint32(offset,true)!==0x02014b50) throw new Error('ZIP-Dateiliste beschädigt oder nicht unterstützt.');
+    const nameLen=c.getUint16(offset+28,true), extraLen=c.getUint16(offset+30,true), commentLen=c.getUint16(offset+32,true);
+    const next=offset+46+nameLen+extraLen+commentLen;
+    if(next>c.byteLength) throw new Error('Ungültiger ZIP-Dateiname.');
+    entries.push(decoder.decode(new Uint8Array(c.buffer,c.byteOffset+offset+46,nameLen)));
+    offset=next;
+  }
+  return entries;
+}
+
+byId('inspect').onclick = async () => {
+  const f = fileInput.files && fileInput.files[0];
+  if (!f) {byId('report').textContent='Bitte zuerst eine APK/ZIP-Datei auswählen.';return;}
+  byId('report').textContent='Untersuche ZIP-Struktur …';
+  try {
+    const entries=await inspectZip(f);
+    const manifest=entries.includes('AndroidManifest.xml');
+    const dex=entries.some(x=>/^classes(\d*)\.dex$/.test(x));
+    const signatureV1=entries.some(x=>/^META-INF\/[^/]+\.(RSA|DSA|EC)$/i.test(x));
+    const nativeLibs=entries.filter(x=>x.startsWith('lib/')&&x.endsWith('.so')).length;
+    const result=[
+      `Datei: ${f.name}`,`Größe: ${f.size.toLocaleString('de-DE')} Bytes`,
+      `ZIP-Einträge: ${entries.length}`, `AndroidManifest.xml: ${manifest?'vorhanden':'nicht gefunden'}`,
+      `DEX-Anwendungscode: ${dex?'vorhanden':'nicht gefunden'}`,`Native Bibliotheken: ${nativeLibs}`,
+      `V1-Signaturdatei: ${signatureV1?'gefunden':'nicht gefunden'}`,
+      '', 'Ein vorhandenes Manifest oder eine V1-Signaturdatei belegt keine sichere oder installierbare APK.',
+      'APK-V2/V3/V4-Signaturen, Berechtigungen, Paketname und Malware werden hier NICHT geprüft.'
+    ];
+    lastReport=result.join('\n');byId('report').textContent=lastReport;
+  } catch(err) {lastReport='Prüfung fehlgeschlagen: '+err.message;byId('report').textContent=lastReport;}
+};
+
+function downloadText(filename,content) {
+  if (window.AndroidBridge && typeof AndroidBridge.saveTextFile==='function') {
+    AndroidBridge.saveTextFile(filename,content);
+    return;
+  }
+  const url=URL.createObjectURL(new Blob([content],{type:'text/plain;charset=utf-8'}));
+  const a=document.createElement('a');a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),2000);
+}
+window.onNativeSaveResult = (ok,message) => {byId('exportStatus').textContent=message;};
+byId('saveReport').onclick=()=>{
+  if (!lastReport) { byId('report').textContent='Erst eine Datei analysieren.';return; }
+  downloadText('Orgoner-APK-Bericht.txt',lastReport);
+};
+byId('export').onclick=()=>{
+  const name=(byId('name').value.replace(/[^a-zA-Z0-9_]/g,'').replace(/^[0-9]+/,'')||'MeineApp').slice(0,40);
+  const swift=`import SwiftUI\n\n@main\nstruct ${name}App: App {\n    var body: some Scene {\n        WindowGroup { ContentView() }\n    }\n}\n\nstruct ContentView: View {\n    var body: some View {\n        VStack(spacing: 16) {\n            Image(systemName: "iphone").font(.largeTitle)\n            Text("${name}").font(.title)\n            Text("iOS-Projektstarter: Funktionen müssen portiert werden.")\n        }.padding()\n    }\n}\n`;
+  downloadText(name+'.swift',swift);
+  byId('exportStatus').textContent='SwiftUI-Datei zur Speicherung vorbereitet.';
+};
+
+function compareVersions(a,b) {
+  const pa=a.split('.').map(Number),pb=b.split('.').map(Number);
+  for(let i=0;i<Math.max(pa.length,pb.length);i++) { const d=(pa[i]||0)-(pb[i]||0);if(d!==0)return Math.sign(d); }
+  return 0;
+}
+function validHttpsUrl(url){try {return new URL(url).protocol==='https:';}catch(_){return false;}}
+function showUpdateResponse(data) {
+  const el=byId('updateStatus');
+  if (data.error) {el.textContent='Updateprüfung fehlgeschlagen: '+data.error;return;}
+  if (!/^\d+(\.\d+){1,3}$/.test(data.version||'')) {el.textContent='Ungültige Versionsnummer in der Update-Datei.';return;}
+  if (compareVersions(data.version,VERSION) <= 0) {el.textContent='Version 1.0.0 ist aktuell (laut eingestellter Quelle).';return;}
+  if (!validHttpsUrl(data.apk_url)) {el.textContent='Neue Version '+data.version+' verfügbar, aber die HTTPS-Downloadadresse fehlt.';return;}
+  el.textContent='Neue Version '+data.version+' verfügbar. APK über den Button öffnen.';
+  const b=document.createElement('button');b.type='button';b.textContent='APK herunterladen';
+  b.onclick=()=>{
+    if(window.AndroidBridge && typeof AndroidBridge.openHttps==='function') AndroidBridge.openHttps(data.apk_url);
+    else window.open(data.apk_url,'_blank','noopener,noreferrer');
+  };
+  el.appendChild(document.createElement('br'));el.appendChild(b);
+}
+window.onNativeUpdateResult=(payload)=>{
+  try {showUpdateResponse(JSON.parse(payload));} catch(_) {byId('updateStatus').textContent='Fehler beim Lesen der Update-Antwort.';}
+};
+byId('checkUpdate').onclick = async () => {
+  const url=feedInput.value.trim();
+  if (!validHttpsUrl(url)) {byId('updateStatus').textContent='Bitte eine gültige HTTPS-Adresse für version.json eintragen.';return;}
+  try{localStorage.setItem('orgoner-update-url',url);}catch(_){}
+  byId('updateStatus').textContent='Prüfe Updatequelle …';
+  if(window.AndroidBridge && typeof AndroidBridge.checkUpdates==='function') {AndroidBridge.checkUpdates(url);return;}
+  try {
+    const response=await fetch(url,{cache:'no-store'});if(!response.ok)throw new Error('HTTP '+response.status);
+    const data=await response.json();showUpdateResponse(data);
+  } catch(err) {showUpdateResponse({error:err.message+' (Im Browser kann CORS erforderlich sein.)'});}
+};
+</script>
+</body>
+</html>
