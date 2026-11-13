@@ -1,0 +1,43 @@
+name: TRUMA SHOW Android APK
+on:
+  push:
+    branches:
+      - build/truma-show-v1
+    paths:
+      - "truma-build/**"
+      - ".github/workflows/truma-show-build.yml"
+  workflow_dispatch:
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify and extract Android project
+        shell: bash
+        run: |
+          mkdir -p truma-out
+          cat truma-build/source.part1 truma-build/source.part2 truma-build/source.part3 truma-build/source.part4 | base64 -d > "$RUNNER_TEMP/truma-build.tar.xz"
+          echo "a2e8fc9e478e4c484e827b8226e070383e4c01903d1c3527e5840ebbf251311c  $RUNNER_TEMP/truma-build.tar.xz" | sha256sum -c
+          tar -xJf "$RUNNER_TEMP/truma-build.tar.xz" -C truma-out
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - name: Install SDK 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+      - name: Build and test APK
+        working-directory: truma-out/android
+        run: gradle --no-daemon :app:testDebugUnitTest :app:assembleDebug
+      - name: Stage APK
+        run: cp truma-out/android/app/build/outputs/apk/debug/app-debug.apk TRUMA-SHOW-1.0-debug.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TRUMA-SHOW-1.0-debug-apk
+          path: TRUMA-SHOW-1.0-debug.apk
+          if-no-files-found: error
